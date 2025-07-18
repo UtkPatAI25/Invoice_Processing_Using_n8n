@@ -1,0 +1,1292 @@
+{
+  "name": "Invoice Processing",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\nreturn items.map(item => {\n  const bKeys = item.binary ? Object.keys(item.binary) : [];\n  if (bKeys.length) {\n    const realKey = bKeys[0];\n    const { data, mimeType, fileName } = item.binary[realKey];\n\n    // determine fileType...\n    let fileType = 'unknown';\n    if (mimeType.startsWith('image/')) fileType = 'image';\n    else if (mimeType === 'application/pdf') fileType = 'pdf';\n    item.json.fileType = fileType;\n    item.json.mimeType = mimeType;\n\n    // normalize **including** fileName\n    item.binary.data0 = { data, mimeType, fileName };\n  } else {\n    item.json.fileType = 'no_file';\n    item.json.mimeType = 'none';\n  }\n  return item;\n});\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2540,
+        -540
+      ],
+      "id": "471be3cc-4baf-46c9-974f-fbd57324cc2d",
+      "name": "Detect File Type1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c1a4b7d3-9e2f-4d3a-8b5c-6f7e8d9c0a1b",
+              "leftValue": "={{$json.fileType}}",
+              "rightValue": "image",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -2360,
+        -540
+      ],
+      "id": "f246ff4a-66da-4f24-a3a9-565ccc57faaa",
+      "name": "Route by File Type1"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [
+        -2180,
+        -360
+      ],
+      "id": "1a2d7e11-377c-4196-983f-877294bb186a",
+      "name": "Extract PDF Text1"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o-mini",
+          "mode": "list",
+          "cachedResultName": "GPT-4O-MINI"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "You are an AI assistant that extracts structured data from invoices for entry into a Google Sheets database. The invoices can come from any vendor or business type (e.g., cleaners, IT suppliers, consultants, utility bills, etc.).\n\nTASK: Extract the following fields from the invoice text input. Return the output as a valid JSON object. Do not include markdown code blocks, just plain JSON.\n\nOUTPUT FORMAT:\n{\n  \"invoice_number\": \"string\",\n  \"vendor\": \"string\",\n  \"date\": \"YYYY-MM-DD\",\n  \"due_date\": \"YYYY-MM-DD\",\n  \"description\": \"string\",\n  \"subtotal\": number,\n  \"tax\": number,\n  \"total\": number,\n  \"email\": \"string\",\n  \"status\": \"Paid\" or \"Unpaid\" or \"Overdue\" or null\n}\n\nRULES:\n- If any value is not available or clearly shown, return null for that field.\n- Return ONLY the JSON object, no additional text.\n- Dates must be ISO format (YYYY-MM-DD).\n- Description should combine all line items into one string (e.g. '2x keyboards, 1x monitor')"
+            },
+            {
+              "content": "={{ $json.text }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -1960,
+        -360
+      ],
+      "id": "d4157c0a-4e72-4756-9f01-7ac157518304",
+      "name": "OpenAI PDF Processor1",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "openAiApi": {
+          "id": "bMGULswmfwp0NJOt",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nlet raw = null;\n\n// OpenAI (object style) format:\nif (\n  input.message &&\n  typeof input.message.content === 'string' &&\n  input.message.content.trim() !== ''\n) {\n  raw = input.message.content;\n}\n// Fallback for rare alternate structures:\nelse if (typeof input.content === 'string' && input.content.trim() !== '') {\n  raw = input.content;\n}\n\nif (!raw) {\n  throw new Error(\n    'No valid OpenAI content found to parse. Input: ' +\n      JSON.stringify(input, null, 2)\n  );\n}\n\nlet parsed, markdown;\ntry {\n  // Clean up possible code fences and whitespace\n  let cleaned = raw\n    .replace(/^\\s*```[a-zA-Z]*\\s*/m, '')\n    .replace(/```$/m, '')\n    .trim();\n\n  parsed = JSON.parse(cleaned);\n  if (typeof parsed === 'string') {\n    parsed = JSON.parse(parsed);\n  }\n\n  markdown = `\n**Invoice Summary**\n\n- **Invoice #:** ${String(parsed.invoice_number || 'N/A')}\n- **Vendor:** ${String(parsed.vendor || 'N/A')}\n- **Date:** ${String(parsed.date || 'N/A')}\n- **Due Date:** ${String(parsed.due_date || 'N/A')}\n- **Description:** ${String(parsed.description || 'N/A')}\n- **Subtotal:** $${parsed.subtotal != null && !isNaN(Number(parsed.subtotal)) ? Number(parsed.subtotal).toFixed(2) : '0.00'}\n- **Tax:** $${parsed.tax != null && !isNaN(Number(parsed.tax)) ? Number(parsed.tax).toFixed(2) : '0.00'}\n- **Total:** $${parsed.total != null && !isNaN(Number(parsed.total)) ? Number(parsed.total).toFixed(2) : '0.00'}\n- **Status:** ${String(parsed.status || 'N/A')}\n  `.trim();\n\n} catch (error) {\n  throw new Error(\n    'Failed to parse OpenAI output as JSON: ' + error.message + '\\nRaw input: ' + raw\n  );\n}\n\nreturn [\n  {\n    json: {\n      ...parsed,\n      markdown,\n    },\n    binary: $input.first().binary,\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1360,
+        -460
+      ],
+      "id": "47b429d3-cc6e-4272-9312-883827be2363",
+      "name": "Parse Invoice Data1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bc926580-398b-466c-8891-c98f84fc6646",
+              "leftValue": "={{ $json.content }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1580,
+        -560
+      ],
+      "id": "f8233345-9bd4-46e2-87b7-4b4444f7b74f",
+      "name": "If2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "bc926580-398b-466c-8891-c98f84fc6646",
+              "leftValue": "={{ $json.message.content }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1580,
+        -360
+      ],
+      "id": "203b4ecc-63dc-4f58-85f3-f9b762fb0cbf",
+      "name": "If3"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -1140,
+        -360
+      ],
+      "id": "66a41bd0-d436-4a04-892a-d6cf139e0505",
+      "name": "Merge1",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $('Search if File Exists').item.json.id }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1183615467,
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/12x8O0_zet_oeC7JGpabqRp65r88ujssms6Xblt_fbYU/edit#gid=1183615467"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Invoice#": "={{ $json.data[0].invoice_number }}",
+            "Added On": "={{ new Date().toLocaleString(\"en-US\", {timeZone: \"America/New_York\"}) }} ET",
+            "Vendor": "={{ $json.data[0].vendor }}",
+            "Due Date": "={{ $json.data[0].due_date }}",
+            "Invoice Date": "={{ $json.data[0].date }}",
+            "Discription ": "={{ $json.data[0].description }}",
+            "Tax": "={{ $json.data[0].tax }}",
+            "Subtotal": "={{ $json.data[0].subtotal }}",
+            "Total": "={{ $json.data[0].total }}",
+            "Status": "={{ $json.data[0].status }}",
+            "Email": "={{ $json.data[0].email }}",
+            "File Link": "={{ $('Upload file').item.json.webViewLink }}"
+          },
+          "matchingColumns": [
+            "Invoice#"
+          ],
+          "schema": [
+            {
+              "id": "Added On",
+              "displayName": "Added On",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice#",
+              "displayName": "Invoice#",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Vendor",
+              "displayName": "Vendor",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Invoice Date",
+              "displayName": "Invoice Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Due Date",
+              "displayName": "Due Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Discription ",
+              "displayName": "Discription ",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Subtotal",
+              "displayName": "Subtotal",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Tax",
+              "displayName": "Tax",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total",
+              "displayName": "Total",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "File Link",
+              "displayName": "File Link",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -700,
+        -360
+      ],
+      "id": "1f811b0c-67b9-4217-8b22-85bdfbbcdbdd",
+      "name": "Update Google Sheet1",
+      "retryOnFail": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "irkkgfSMsCbsGpFF",
+          "name": "Google Sheets account 2"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "GPT-4O"
+        },
+        "text": "You are an AI assistant that extracts structured data from invoices for entry into a Google Sheets database. The invoices can come from any vendor or business type (e.g., cleaners, IT suppliers, consultants, utility bills, etc.).\n\nTASK: Extract the following fields from the invoice text input. Return the output as a valid JSON object. Do not include markdown code blocks, just plain JSON.\n\nOUTPUT FORMAT:\n{\n  \"invoice_number\": \"string\",\n  \"vendor\": \"string\",\n  \"date\": \"YYYY-MM-DD\",\n  \"due_date\": \"YYYY-MM-DD\",\n  \"description\": \"string\",\n  \"subtotal\": number,\n  \"tax\": number,\n  \"total\": number,\n  \"email\": \"string\",\n  \"status\": \"Paid\" or \"Unpaid\" or \"Overdue\" or null\n}\n\nRULES:\n- If any value is not available or clearly shown, return null for that field.\n- Return ONLY the JSON object, no additional text.\n- Dates must be ISO format (YYYY-MM-DD).\n- Description should combine all line items into one string (e.g. '2x keyboards, 1x monitor')",
+        "inputType": "base64",
+        "binaryPropertyName": "file_0",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        -1880,
+        -560
+      ],
+      "id": "2d8309e9-81f5-4c63-83c6-fdd750d2b1f8",
+      "name": "Extract From Image1",
+      "retryOnFail": true,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "openAiApi": {
+          "id": "bMGULswmfwp0NJOt",
+          "name": "OpenAi account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "aggregate": "aggregateAllItemData",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.aggregate",
+      "typeVersion": 1,
+      "position": [
+        -920,
+        -360
+      ],
+      "id": "d4898e86-f857-460c-85f4-fb56d6e1740b",
+      "name": "Aggregate"
+    },
+    {
+      "parameters": {
+        "name": "={{ $('Telegram Trigger').item.json.message.document.file_name }}",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list",
+          "cachedResultName": "My Drive",
+          "cachedResultUrl": "https://drive.google.com/drive/my-drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $('Search if Folder Exists').item.json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1500,
+        -140
+      ],
+      "id": "3d223849-1f18-404d-ad01-1ae6685b5505",
+      "name": "Upload file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "share",
+        "fileId": {
+          "__rl": true,
+          "value": "={{ $node[\"Upload file\"].json[\"id\"] }}",
+          "mode": "id"
+        },
+        "permissionsUi": {
+          "permissionsValues": {
+            "role": "reader",
+            "type": "anyone"
+          }
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -1300,
+        -140
+      ],
+      "id": "165e834c-ab73-47ab-a42b-116773142bf5",
+      "name": "Share file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2840,
+        -360
+      ],
+      "id": "1528043c-4990-4f92-b1d7-12ca2188f320",
+      "name": "Telegram Trigger",
+      "webhookId": "5b5fa776-5ad9-4abb-9a79-2d3f6b081be9",
+      "credentials": {
+        "telegramApi": {
+          "id": "FDoNeUShLAtWnjKw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Telegram Trigger').item.json.message.from.id }}",
+        "text": "=✅ Invoice processed successfully!\n📊**Invoice Details:**\n**Vendor:** {{ $json.Vendor }} \n**Invoice #:** {{ $json['Invoice#'] }} \n**Invoice Date:** {{ $json['Invoice Date'] }} \n**Due Date:** {{ $json['Due Date'] }}\n**Total:** {{ $json.Total }} \n**Status:**{{ $json.Status }} \n📁 **File stored:** Invoices/{{ new Date().getFullYear() }}\n🔗 **Drive Link:** [View Document]({{ $json['File Link'] }})\n📋**Updated spreadsheet:** Invoices/{{ new Date().getFullYear() }}/Invoices_Summary_{{ new Date().getFullYear() }}. \nNeed anything else? Send another invoice! 📮",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -480,
+        -360
+      ],
+      "id": "a9b5de44-f4a3-4f42-a093-5e1156d26109",
+      "name": "Send a text message",
+      "webhookId": "87aebae5-2564-450c-b5d5-6c742098caf1",
+      "credentials": {
+        "telegramApi": {
+          "id": "FDoNeUShLAtWnjKw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "={{ new Date().getFullYear() }}",
+        "filter": {
+          "driveId": {
+            "mode": "list",
+            "value": "My Drive"
+          },
+          "folderId": {
+            "__rl": true,
+            "value": "1nUE6gkje2B6nPHpRyW1S71-qg_xgApCY",
+            "mode": "list",
+            "cachedResultName": "Invoices",
+            "cachedResultUrl": "https://drive.google.com/drive/folders/1nUE6gkje2B6nPHpRyW1S71-qg_xgApCY"
+          },
+          "whatToSearch": "folders"
+        },
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "mimeType"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -4020,
+        -420
+      ],
+      "id": "f5ab274c-c114-47d2-bdb7-fc2a3b899b04",
+      "name": "Search if Folder Exist1",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a46db870-b990-4f26-a586-9b58f751b2a2",
+              "leftValue": "={{ $json.isEmpty() }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -3800,
+        -420
+      ],
+      "id": "a22737ad-2a6b-4a0c-b498-5a3130b3db41",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "resource": "folder",
+        "name": "={{ new Date().getFullYear() }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "1nUE6gkje2B6nPHpRyW1S71-qg_xgApCY",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/1nUE6gkje2B6nPHpRyW1S71-qg_xgApCY"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -3580,
+        -520
+      ],
+      "id": "c75d7757-cc1f-4b9d-997c-822c076644e5",
+      "name": "Create folder1",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtMinute": 1
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -4240,
+        -420
+      ],
+      "id": "f60294ff-2363-4635-96b1-f07ce1fbf2f1",
+      "name": "Schedule Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "copy",
+        "fileId": {
+          "__rl": true,
+          "value": "18B0kYVuNYxUnXoab5FPsKhYiOlf8nN2knW2-0oTOytc",
+          "mode": "list",
+          "cachedResultName": "Invoices",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/18B0kYVuNYxUnXoab5FPsKhYiOlf8nN2knW2-0oTOytc/edit?usp=drivesdk"
+        },
+        "name": "=Invoices_Summary_{{ new Date().getFullYear() }}",
+        "sameFolder": false,
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "={{ $json.id }}",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -3360,
+        -520
+      ],
+      "id": "bd6d12bd-b341-4afe-8867-34bb784d5bce",
+      "name": "Copy file",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        -3580,
+        -320
+      ],
+      "id": "2f8d7268-d8fa-459c-9fc4-660bc6acbb12",
+      "name": "No Operation, do nothing"
+    },
+    {
+      "parameters": {
+        "content": "# Create Folder and File If don't exist\n",
+        "height": 440,
+        "width": 1300,
+        "color": 7
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -4400,
+        -600
+      ],
+      "typeVersion": 1,
+      "id": "e5d1022d-4ed7-4a46-b8da-3c4323aee4b6",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a46db870-b990-4f26-a586-9b58f751b2a2",
+              "leftValue": "={{ $json.isEmpty() }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -2280,
+        -140
+      ],
+      "id": "33a58618-c523-46f3-aa4f-7afe1b3ad88c",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "fileId": "={{ $('Telegram Trigger').item.json.message.document.file_id }}"
+      },
+      "id": "15f9d429-f7a9-4347-bb94-c4bd74d12f46",
+      "name": "Download File",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1700,
+        -140
+      ],
+      "webhookId": "6ded5607-f5a6-43de-8452-6c5586362bbd",
+      "credentials": {
+        "telegramApi": {
+          "id": "FDoNeUShLAtWnjKw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a46db870-b990-4f26-a586-9b58f751b2a2",
+              "leftValue": "={{ $json.isEmpty() }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -1900,
+        -140
+      ],
+      "id": "119e4c00-e15d-4bd0-b162-d436b11dc50e",
+      "name": "If4"
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "=Invoices_Summary_{{ new Date().getFullYear() }}",
+        "filter": {
+          "driveId": {
+            "mode": "list",
+            "value": "My Drive"
+          },
+          "folderId": {
+            "__rl": true,
+            "value": "={{ $json.id }}",
+            "mode": "id"
+          },
+          "whatToSearch": "files"
+        },
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "mimeType"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -2080,
+        -140
+      ],
+      "id": "916e8ac9-f9d1-459b-bc7b-d173eb249fe7",
+      "name": "Search if File Exists",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "fileFolder",
+        "queryString": "={{ new Date().getFullYear() }}",
+        "filter": {
+          "driveId": {
+            "mode": "list",
+            "value": "My Drive"
+          },
+          "folderId": {
+            "__rl": true,
+            "value": "1nUE6gkje2B6nPHpRyW1S71-qg_xgApCY",
+            "mode": "list",
+            "cachedResultName": "Invoices",
+            "cachedResultUrl": "https://drive.google.com/drive/folders/1nUE6gkje2B6nPHpRyW1S71-qg_xgApCY"
+          },
+          "whatToSearch": "folders"
+        },
+        "options": {
+          "fields": [
+            "id",
+            "name",
+            "mimeType"
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        -2460,
+        -140
+      ],
+      "id": "2f49d592-0493-41e9-85db-06cef8167e1e",
+      "name": "Search if Folder Exists",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "EiK8C9fKLMMyToRm",
+          "name": "Google Drive account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.message.chat.id }}",
+        "text": "📄 Invoice received! Processing your document...",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "29ec080f-8473-4cfe-89ca-4fb9a15b973d",
+      "name": "Send Initial Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2660,
+        -140
+      ],
+      "webhookId": "8bda98c0-bcee-46f5-b6a6-b217576c264f",
+      "credentials": {
+        "telegramApi": {
+          "id": "FDoNeUShLAtWnjKw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "96fe5bd5-d178-4f3e-84c2-00db14f5c7f1",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -4340,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $node[\"Telegram Trigger\"].json.message.chat.id }}",
+        "text": "❌ **Processing failed**\nCould not extract data from document. Please ensure:\n- Document is clear and readable\n- Text is not rotated or upside down\n- Try sending as PDF if possible\n\nError: {{ $json.error.message }}",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      },
+      "id": "6617bf88-761f-49d5-9cfa-2b869aa49cc6",
+      "name": "Send Error Message",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -4060,
+        -20
+      ],
+      "webhookId": "1206810d-5ff6-4f8c-bd7e-c35373c9aa3b",
+      "credentials": {
+        "telegramApi": {
+          "id": "FDoNeUShLAtWnjKw",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# Error Handling",
+        "height": 220,
+        "width": 600
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -4380,
+        -100
+      ],
+      "typeVersion": 1,
+      "id": "43a87722-ed9f-4c04-bf8e-f6ebfe912e31",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "# Invoice Processing",
+        "height": 620,
+        "width": 2700,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -2920,
+        -580
+      ],
+      "typeVersion": 1,
+      "id": "0e1de106-100e-4923-b49d-b0a3d1dcd604",
+      "name": "Sticky Note2"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Detect File Type1": {
+      "main": [
+        [
+          {
+            "node": "Route by File Type1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by File Type1": {
+      "main": [
+        [
+          {
+            "node": "Extract From Image1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract PDF Text1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract PDF Text1": {
+      "main": [
+        [
+          {
+            "node": "OpenAI PDF Processor1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI PDF Processor1": {
+      "main": [
+        [
+          {
+            "node": "If3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Invoice Data1": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If2": {
+      "main": [
+        [
+          {
+            "node": "Parse Invoice Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If3": {
+      "main": [
+        [
+          {
+            "node": "Parse Invoice Data1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Aggregate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Google Sheet1": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract From Image1": {
+      "main": [
+        [
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aggregate": {
+      "main": [
+        [
+          {
+            "node": "Update Google Sheet1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload file": {
+      "main": [
+        [
+          {
+            "node": "Share file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Share file": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "Detect File Type1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Initial Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search if Folder Exist1": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Create folder1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Search if Folder Exist1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create folder1": {
+      "main": [
+        [
+          {
+            "node": "Copy file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Search if File Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download File": {
+      "main": [
+        [
+          {
+            "node": "Upload file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If4": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Download File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search if File Exists": {
+      "main": [
+        [
+          {
+            "node": "If4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search if Folder Exists": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Initial Message": {
+      "main": [
+        [
+          {
+            "node": "Search if Folder Exists",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Send Error Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "451338b9-169b-443c-b9f6-e8dd93cbf4b0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "d4b820e37f7c78e995c731fb73e36d1eb02c9d732fcf98138005b800ec01b3c9"
+  },
+  "id": "0kayugyJqQai9H5O",
+  "tags": [
+    {
+      "createdAt": "2025-07-18T13:41:05.031Z",
+      "updatedAt": "2025-07-18T13:41:05.031Z",
+      "id": "KvlzYdup5J78ATHB",
+      "name": "Invoice"
+    }
+  ]
+}
