@@ -57,6 +57,9 @@ This n8n workflow enables automatic invoice processing for businesses and freela
 
 ---
 
+<img width="1818" height="332" alt="image" src="https://github.com/user-attachments/assets/ac5473e8-ebca-4d50-86a1-fbb0ad219b3b" />
+
+
 ## Features
 
 - **Multi-format Support:** Handles both PDF and image invoices.
